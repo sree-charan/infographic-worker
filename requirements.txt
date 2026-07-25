@@ -1,4 +1,4 @@
-# The unofficial NotebookLM client. No browser extra is needed at runtime because
-# the CLI reads the seeded session from NOTEBOOKLM_AUTH_JSON. Pinned to the
-# version verified against this worker's CLI calls.
+# The unofficial NotebookLM client, pinned to the version verified against this
+# worker's CLI calls. Pillow is used for footer crop + logo compositing.
 notebooklm-py==0.7.3
+pillow>=10,<12
