@@ -107,9 +107,10 @@ def ensure_notebook(title: str, notebook_id: str | None) -> str:
 
 
 def add_text_source(notebook_id: str, text: str) -> None:
-    # `source add -` reads the content from stdin; --type text forces a text source.
-    run_cli(["source", "add", "-", "--type", "text", "-n", notebook_id],
-            stdin_text=text, timeout=180)
+    # Pass the text directly as the CONTENT argument; --type text forces a text
+    # source (avoids the auto-detect stderr warning and any stdin-support drift).
+    run_cli(["source", "add", text, "--type", "text", "-n", notebook_id],
+            timeout=180)
 
 
 def generate_infographic(notebook_id: str, *, orientation: str, detail: str,
@@ -128,7 +129,7 @@ def generate_infographic(notebook_id: str, *, orientation: str, detail: str,
 def download_infographic(notebook_id: str, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     run_cli(["download", "infographic", str(out_path), "-n", notebook_id,
-             "--latest", "--force"], timeout=180)
+             "--latest"], timeout=180)
     if not out_path.exists() or out_path.stat().st_size == 0:
         raise RuntimeError(f"Download produced no file at {out_path}")
 
