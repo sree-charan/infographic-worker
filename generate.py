@@ -176,9 +176,22 @@ def write_placeholder(out_path: Path, size: tuple[int, int] = (600, 1000)) -> No
 # post-processing: crop NotebookLM footer + paste portal logo
 # --------------------------------------------------------------------------- #
 def _bg_color(im: Image.Image) -> tuple[int, int, int, int]:
-    """Sample the background from the top-left corner (reliably empty)."""
-    px = im.convert("RGBA").getpixel((1, 1))
-    return (px[0], px[1], px[2], 255)
+    """Sample the footer background so the band blends with the image bottom.
+
+    Uses the median colour of the bottom-most row (text/content is a minority of
+    that row, so the median lands on the background) which handles cream, white,
+    and gradient themes far better than a single corner pixel.
+    """
+    import statistics
+    rgba = im.convert("RGBA")
+    w, h = rgba.size
+    y = h - 1
+    step = max(1, w // 200)
+    px = [rgba.getpixel((x, y)) for x in range(0, w, step)]
+    r = int(statistics.median(p[0] for p in px))
+    g = int(statistics.median(p[1] for p in px))
+    b = int(statistics.median(p[2] for p in px))
+    return (r, g, b, 255)
 
 
 def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
