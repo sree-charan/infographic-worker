@@ -1,0 +1,99 @@
+name: Generate Infographic
+
+on:
+  workflow_dispatch:
+    inputs:
+      text:
+        description: "Announcement / topic text"
+        required: true
+      title:
+        description: "Title (used for filename + notebook)"
+        required: false
+        default: "Announcement"
+      orientation:
+        description: "Image orientation"
+        required: false
+        default: "portrait"
+        type: choice
+        options: ["portrait", "landscape", "square"]
+      detail:
+        description: "Detail level"
+        required: false
+        default: "detailed"
+        type: choice
+        options: ["concise", "standard", "detailed"]
+      style:
+        description: "Optional style (blank = auto)"
+        required: false
+        default: ""
+      instructions:
+        description: "Optional extra steer for generation"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: generate-infographic
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate infographic
+        env:
+          # Seed this once locally, then paste the session JSON into repo
+          # Settings -> Secrets and variables -> Actions -> NOTEBOOKLM_AUTH_JSON.
+          NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}
+          # Optional: pin a specific notebook to reuse (else a new one is created).
+          NOTEBOOKLM_NOTEBOOK: ${{ vars.NOTEBOOKLM_NOTEBOOK }}
+        run: |
+          python generate.py \
+            --text "${{ inputs.text }}" \
+            --title "${{ inputs.title }}" \
+            --orientation "${{ inputs.orientation }}" \
+            --detail "${{ inputs.detail }}" \
+            --style "${{ inputs.style }}" \
+            --instructions "${{ inputs.instructions }}" \
+            --host-dir generated \
+            --manifest generated/latest.json \
+            --repo "${{ github.repository }}" \
+            --ref "${{ github.ref_name }}"
+
+      - name: Upload PNG as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: infographic
+          path: generated/*.png
+
+      - name: Commit hosted image
+        run: |
+          git config user.name "infographic-bot"
+          git config user.email "infographic-bot@users.noreply.github.com"
+          git add generated/
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+          else
+            git commit -m "Add infographic ($(date -u +%FT%TZ))"
+            git push
+          fi
+
+      - name: Publish URL to job summary
+        run: |
+          URL=$(python -c "import json;print(json.load(open('generated/latest.json'))['url'])")
+          echo "### Infographic ready" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**URL:** $URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "![preview]($URL)" >> "$GITHUB_STEP_SUMMARY"

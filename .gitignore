@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local working output (the committed images live in generated/)
+out/
+
+# Never commit credentials
+*storage_state*.json
+*master_token*.json
+.notebooklm/
+auth.json

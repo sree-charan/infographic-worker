@@ -1,0 +1,4 @@
+# The unofficial NotebookLM client. No browser extra is needed at runtime because
+# the CLI reads the seeded session from NOTEBOOKLM_AUTH_JSON. Pin an exact version
+# after your first successful run (see: pip index versions notebooklm-py).
+notebooklm-py>=0.8,<1.0
