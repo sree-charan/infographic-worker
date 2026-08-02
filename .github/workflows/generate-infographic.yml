@@ -57,21 +57,32 @@ jobs:
           #   notebooklm login --master-token --account you@gmail.com
           # then paste ~/.notebooklm/profiles/default/master_token.json here.
           NOTEBOOKLM_MASTER_TOKEN: ${{ secrets.NOTEBOOKLM_MASTER_TOKEN }}
+          # Fallback: a static cookie snapshot (expires; re-seed when it dies).
+          NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}
         run: |
+          # Establish FILE-based auth. We must NOT leave NOTEBOOKLM_AUTH_JSON in
+          # the generate step's env: that env fast-path overrides the on-disk
+          # cookies the master token mints, pinning a stale snapshot.
+          DIR="$HOME/.notebooklm/profiles/default"
+          mkdir -p "$DIR"
           if [ -n "$NOTEBOOKLM_MASTER_TOKEN" ]; then
-            mkdir -p "$HOME/.notebooklm/profiles/default"
-            printf '%s' "$NOTEBOOKLM_MASTER_TOKEN" > "$HOME/.notebooklm/profiles/default/master_token.json"
-            chmod 600 "$HOME/.notebooklm/profiles/default/master_token.json"
-            notebooklm login --master-token-refresh || true
-            echo "Using master-token auth (self-healing)."
+            printf '%s' "$NOTEBOOKLM_MASTER_TOKEN" > "$DIR/master_token.json"
+            chmod 600 "$DIR/master_token.json"
+            notebooklm login --master-token-refresh
+            echo "Master-token auth active (self-healing)."
+          elif [ -n "$NOTEBOOKLM_AUTH_JSON" ]; then
+            printf '%s' "$NOTEBOOKLM_AUTH_JSON" > "$DIR/storage_state.json"
+            chmod 600 "$DIR/storage_state.json"
+            echo "Cookie-snapshot auth active (may expire)."
           else
-            echo "No master token set; falling back to NOTEBOOKLM_AUTH_JSON cookies."
+            echo "No NotebookLM auth configured (set NOTEBOOKLM_MASTER_TOKEN or NOTEBOOKLM_AUTH_JSON)." >&2
+            exit 1
           fi
 
       - name: Generate infographic
         env:
-          # Fallback / legacy: a static cookie snapshot (expires; re-seed when it dies).
-          NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}
+          # Auth comes from the on-disk profile seeded above — do NOT set
+          # NOTEBOOKLM_AUTH_JSON here or it overrides the minted file cookies.
           # Optional: pin a specific notebook to reuse (else a new one is created).
           NOTEBOOKLM_NOTEBOOK: ${{ vars.NOTEBOOKLM_NOTEBOOK }}
         run: |
