@@ -106,12 +106,12 @@ jobs:
           # main can advance between checkout and push (our own pushes, or a
           # prior run). Rebase our single commit on top of latest and retry.
           for attempt in 1 2 3 4 5; do
-            if git push; then
+            if git push origin HEAD:"${GITHUB_REF_NAME}"; then
               echo "Pushed on attempt $attempt."
               exit 0
             fi
-            echo "Push rejected (attempt $attempt); rebasing onto latest main..."
-            git pull --rebase --autostash origin main || true
+            echo "Push rejected (attempt $attempt); rebasing onto latest ${GITHUB_REF_NAME}..."
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
             sleep $((RANDOM % 4 + 2))
           done
           echo "Failed to push after retries." >&2
