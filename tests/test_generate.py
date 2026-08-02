@@ -77,7 +77,7 @@ class ProcessImageTests(unittest.TestCase):
         Image.new("RGB", size, (250, 243, 232)).save(p)
         return p
 
-    def test_crop_then_footer_band_with_logo(self):
+    def test_crop_then_overlay_logo_no_band(self):
         with tempfile.TemporaryDirectory() as d:
             png = self._make(d)
             logo = Path(d) / "logo.png"
@@ -85,11 +85,10 @@ class ProcessImageTests(unittest.TestCase):
 
             generate.process_image(png, crop_frac=0.045, crop_px=None,
                                    logo_path=logo, logo_width_frac=0.26,
-                                   logo_margin_frac=0.03)
+                                   logo_margin_frac=0.02)
             out = Image.open(png)
-            # 1000 -> crop 45 -> 955, then a footer band is appended (height grows)
-            self.assertEqual(out.width, 600)
-            self.assertGreater(out.height, 955)
+            # overlay only: height is the cropped height, NOT grown by a band
+            self.assertEqual(out.size, (600, 1000 - round(1000 * 0.045)))
             self.assertEqual(png.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
 
     def test_crop_px_override_and_no_logo(self):

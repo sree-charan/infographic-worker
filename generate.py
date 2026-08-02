@@ -175,30 +175,16 @@ def write_placeholder(out_path: Path, size: tuple[int, int] = (600, 1000)) -> No
 # --------------------------------------------------------------------------- #
 # post-processing: crop NotebookLM footer + paste portal logo
 # --------------------------------------------------------------------------- #
-def _dominant_color(im: Image.Image) -> tuple[int, int, int, int]:
-    """Most-used colour in the image, so the footer band blends into it.
-
-    Downscales first (speed) and picks the single most frequent pixel colour —
-    for an infographic that's the background, so the band is invisible on white,
-    cream, or any solid/gradient theme.
-    """
-    rgb = im.convert("RGB")
-    w, h = rgb.size
-    small = rgb.resize((128, max(1, round(128 * h / w))))
-    colors = small.getcolors(maxcolors=small.width * small.height) or [(1, (255, 255, 255))]
-    r, g, b = max(colors, key=lambda c: c[0])[1]
-    return (r, g, b, 255)
-
-
 def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
                   logo_path: Path | None, logo_width_frac: float,
                   logo_margin_frac: float) -> None:
-    """Crop the NotebookLM footer, then append a tight band in the image's
-    dominant colour with the portal logo near the bottom of it.
+    """Trim the thin NotebookLM logo strip at the very bottom, then overlay the
+    portal logo in the infographic's existing bottom whitespace.
 
-    The band is appended *below* all content, so the logo can never overlay the
-    infographic. `logo_margin_frac` is the gap above the logo; the gap below is
-    smaller so the logo sits low (less dead space).
+    No band is added — the NotebookLM mark is a small sliver, so we crop just
+    that and reuse the empty margin the infographic already leaves at the bottom.
+    The logo is centered (the bottom-centre of these layouts is reliably empty),
+    so it doesn't collide with content.
     """
     im = Image.open(png_path).convert("RGBA")
     w, h = im.size
@@ -214,14 +200,10 @@ def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
         target_w = max(1, round(w * logo_width_frac))
         target_h = max(1, round(target_w * logo.height / logo.width))
         logo = logo.resize((target_w, target_h), Image.LANCZOS)
-
-        top_gap = round(h * logo_margin_frac)          # clearance from content
-        bottom_gap = max(1, round(top_gap * 0.5))       # smaller -> logo sits low
-        band_h = top_gap + target_h + bottom_gap
-        canvas = Image.new("RGBA", (w, h + band_h), _dominant_color(im))
-        canvas.alpha_composite(im, (0, 0))
-        canvas.alpha_composite(logo, ((w - target_w) // 2, h + top_gap))
-        im = canvas
+        margin = round(h * logo_margin_frac)
+        x = (w - target_w) // 2
+        y = h - target_h - margin
+        im.alpha_composite(logo, (x, max(0, y)))
 
     im.convert("RGB").save(png_path)
 
@@ -275,8 +257,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--timeout", type=int, default=900)
 
     # post-processing
-    p.add_argument("--crop-frac", type=float, default=0.045,
-                   help="Fraction of height to crop off the bottom (default 0.045).")
+    p.add_argument("--crop-frac", type=float, default=0.03,
+                   help="Fraction of height to trim off the bottom (just the NotebookLM strip).")
     p.add_argument("--crop-px", type=int, default=None,
                    help="Absolute bottom crop in px (overrides --crop-frac).")
     p.add_argument("--logo", default="assets/logo.png", help="Logo PNG to paste.")
