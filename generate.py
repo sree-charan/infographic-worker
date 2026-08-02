@@ -257,10 +257,15 @@ def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
             # Enough native whitespace — overlay, add no height.
             im.alpha_composite(logo, (x, h - margin - target_h))
         else:
-            # Extend by only the shortfall so the logo clears the content.
+            # Extend by the shortfall. Fill by stretching the image's own bottom
+            # edge downward (not a flat colour), so any frame/border/background
+            # continues naturally — works on plain, cream, gradient, and framed
+            # (e.g. paper-on-background) infographics alike.
             add = needed - empty
+            edge = im.crop((0, h - 2, w, h - 1)).resize((w, add), Image.NEAREST)
             canvas = Image.new("RGBA", (w, h + add), bg)
             canvas.alpha_composite(im, (0, 0))
+            canvas.alpha_composite(edge, (0, h))
             canvas.alpha_composite(logo, (x, (h + add) - margin - target_h))
             im = canvas
 
