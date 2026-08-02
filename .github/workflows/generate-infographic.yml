@@ -51,10 +51,26 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Restore NotebookLM auth
+        env:
+          # Durable, self-healing (preferred): mint once locally with
+          #   notebooklm login --master-token --account you@gmail.com
+          # then paste ~/.notebooklm/profiles/default/master_token.json here.
+          NOTEBOOKLM_MASTER_TOKEN: ${{ secrets.NOTEBOOKLM_MASTER_TOKEN }}
+        run: |
+          if [ -n "$NOTEBOOKLM_MASTER_TOKEN" ]; then
+            mkdir -p "$HOME/.notebooklm/profiles/default"
+            printf '%s' "$NOTEBOOKLM_MASTER_TOKEN" > "$HOME/.notebooklm/profiles/default/master_token.json"
+            chmod 600 "$HOME/.notebooklm/profiles/default/master_token.json"
+            notebooklm login --master-token-refresh || true
+            echo "Using master-token auth (self-healing)."
+          else
+            echo "No master token set; falling back to NOTEBOOKLM_AUTH_JSON cookies."
+          fi
+
       - name: Generate infographic
         env:
-          # Seed this once locally, then paste the session JSON into repo
-          # Settings -> Secrets and variables -> Actions -> NOTEBOOKLM_AUTH_JSON.
+          # Fallback / legacy: a static cookie snapshot (expires; re-seed when it dies).
           NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}
           # Optional: pin a specific notebook to reuse (else a new one is created).
           NOTEBOOKLM_NOTEBOOK: ${{ vars.NOTEBOOKLM_NOTEBOOK }}

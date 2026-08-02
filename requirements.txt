@@ -1,4 +1,7 @@
-# The unofficial NotebookLM client, pinned to the version verified against this
-# worker's CLI calls. Pillow is used for footer crop + logo compositing.
-notebooklm-py==0.7.3
+# Installed from git until the Gemini Notebook rebrand fixes land on PyPI:
+#   - login now recognizes notebook.google.com (#2013)
+#   - master-token headless auth (durable, self-healing CI sessions)
+# Pinned to a verified commit for reproducibility; bump when needed.
+# [headless] pulls gpsoauth for on-demand cookie minting (no browser at runtime).
+notebooklm-py[headless] @ git+https://github.com/teng-lin/notebooklm-py@2ba6c313
 pillow>=10,<12
