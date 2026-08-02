@@ -37,7 +37,7 @@ class UrlTests(unittest.TestCase):
 class DescriptionTests(unittest.TestCase):
     def test_directive_present(self):
         d = generate.compose_description("Focus on the dates.")
-        self.assertIn("plain, natural, human English", d)
+        self.assertIn("college students", d)
         self.assertIn("delve", d)                 # banned-word list is there
         self.assertIn("Focus on the dates.", d)   # user steer appended
 

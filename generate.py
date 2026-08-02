@@ -37,13 +37,20 @@ CLI = os.environ.get("NOTEBOOKLM_BIN", "notebooklm")
 # strip the usual LLM filler. NotebookLM has final say, so this reduces slop
 # strongly but cannot guarantee it 100%.
 VOICE_DIRECTIVE = (
-    "Write in plain, natural, human English for a college-student audience. "
-    "Be direct and concrete. Use short, clear sentences and specific facts "
-    "(dates, times, places, names) taken straight from the source. "
-    "Do NOT use AI filler or buzzwords such as: delve, leverage, robust, "
-    "seamless, unlock, empower, elevate, game-changer, testament to, "
-    "in today's fast-paced world, navigate the landscape. "
-    "No hype, no cliches, no marketing tone, no emoji."
+    "Voice: write like a real person addressing college students — plain, warm, "
+    "and direct. Use short declarative sentences in active voice. Lead with the "
+    "concrete facts taken straight from the source (dates, times, venues, names, "
+    "numbers); never invent, infer, or pad with generic filler. Headings must be "
+    "specific and scannable, not clever wordplay or puns. "
+    "Ban this AI/marketing filler outright: delve, leverage, robust, seamless, "
+    "unlock, empower, elevate, foster, harness, game-changer, cutting-edge, "
+    "testament to, dive in, embark, journey, revolutionize, unleash, supercharge, "
+    "tapestry, realm, in today's fast-paced world, when it comes to, "
+    "it's important to note, navigate the landscape. "
+    "No hype, no cliches, no rhetorical questions, no exclamation spam, no emoji, "
+    "and no empty adjectives like 'amazing' or 'exciting'. "
+    "Gut check: if a line would look right on a printed campus notice, keep it; "
+    "if it reads like an ad or a blog intro, rewrite it."
 )
 
 
