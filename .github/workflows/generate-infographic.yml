@@ -104,14 +104,23 @@ jobs:
           fi
           git commit -m "Add infographic ($(date -u +%FT%TZ))"
           # main can advance between checkout and push (our own pushes, or a
-          # prior run). Rebase our single commit on top of latest and retry.
+          # concurrent run). Rebase and retry; resolve the one file that can
+          # conflict (latest.json, rewritten every run) in favour of THIS run.
           for attempt in 1 2 3 4 5; do
             if git push origin HEAD:"${GITHUB_REF_NAME}"; then
               echo "Pushed on attempt $attempt."
               exit 0
             fi
-            echo "Push rejected (attempt $attempt); rebasing onto latest ${GITHUB_REF_NAME}..."
-            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            echo "Push rejected (attempt $attempt); syncing with ${GITHUB_REF_NAME}..."
+            git fetch origin "${GITHUB_REF_NAME}"
+            if ! git rebase "origin/${GITHUB_REF_NAME}"; then
+              # Image filenames are unique, so only latest.json can conflict.
+              # Keep this run's version (the commit being replayed = "theirs").
+              git checkout --theirs -- generated/latest.json 2>/dev/null \
+                || git checkout --ours -- generated/latest.json 2>/dev/null || true
+              git add generated/
+              GIT_EDITOR=true git rebase --continue || git rebase --abort
+            fi
             sleep $((RANDOM % 4 + 2))
           done
           echo "Failed to push after retries." >&2
