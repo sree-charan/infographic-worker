@@ -175,16 +175,55 @@ def write_placeholder(out_path: Path, size: tuple[int, int] = (600, 1000)) -> No
 # --------------------------------------------------------------------------- #
 # post-processing: crop NotebookLM footer + paste portal logo
 # --------------------------------------------------------------------------- #
+def _dominant_color(im: Image.Image) -> tuple[int, int, int, int]:
+    """Most-used colour in the image (the background, for an infographic)."""
+    rgb = im.convert("RGB")
+    w, h = rgb.size
+    small = rgb.resize((128, max(1, round(128 * h / w))))
+    colors = small.getcolors(maxcolors=small.width * small.height) or [(1, (255, 255, 255))]
+    r, g, b = max(colors, key=lambda c: c[0])[1]
+    return (r, g, b, 255)
+
+
+def _bottom_empty_height(im: Image.Image, bg: tuple[int, int, int, int], tol: int = 24) -> int:
+    """How many px of near-uniform background the image already has at the bottom.
+
+    Scans rows upward from the bottom; a row counts as empty until >2% of its
+    pixels differ from the background colour. Returned in original-image px.
+    """
+    rgb = im.convert("RGB")
+    w, h = rgb.size
+    sw = 120
+    sh = min(h, 600)
+    small = rgb.resize((sw, sh))
+    px = small.load()
+    br, bgc, bb = bg[0], bg[1], bg[2]
+    limit = max(1, int(sw * 0.02))
+    empty = 0
+    for y in range(sh - 1, -1, -1):
+        diff = 0
+        for x in range(sw):
+            r, g, b = px[x, y]
+            if abs(r - br) + abs(g - bgc) + abs(b - bb) > tol:
+                diff += 1
+                if diff > limit:
+                    break
+        if diff > limit:
+            break
+        empty += 1
+    return round(empty * h / sh)
+
+
 def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
                   logo_path: Path | None, logo_width_frac: float,
                   logo_margin_frac: float) -> None:
-    """Trim the thin NotebookLM logo strip at the very bottom, then overlay the
-    portal logo in the infographic's existing bottom whitespace.
+    """Trim the thin NotebookLM logo strip, then place the portal logo at the
+    bottom — adaptively.
 
-    No band is added — the NotebookLM mark is a small sliver, so we crop just
-    that and reuse the empty margin the infographic already leaves at the bottom.
-    The logo is centered (the bottom-centre of these layouts is reliably empty),
-    so it doesn't collide with content.
+    If the infographic already leaves enough blank space at the bottom, the logo
+    is overlaid there (no added height). If content runs to the bottom edge, a
+    band is appended — but only as tall as needed to fit the logo — in the
+    image's dominant colour, so it never overlays content and never wastes space.
     """
     im = Image.open(png_path).convert("RGBA")
     w, h = im.size
@@ -200,10 +239,23 @@ def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
         target_w = max(1, round(w * logo_width_frac))
         target_h = max(1, round(target_w * logo.height / logo.width))
         logo = logo.resize((target_w, target_h), Image.LANCZOS)
+
         margin = round(h * logo_margin_frac)
+        needed = target_h + 2 * margin
+        bg = _dominant_color(im)
+        empty = _bottom_empty_height(im, bg)
         x = (w - target_w) // 2
-        y = h - target_h - margin
-        im.alpha_composite(logo, (x, max(0, y)))
+
+        if empty >= needed:
+            # Enough native whitespace — overlay, add no height.
+            im.alpha_composite(logo, (x, h - margin - target_h))
+        else:
+            # Extend by only the shortfall so the logo clears the content.
+            add = needed - empty
+            canvas = Image.new("RGBA", (w, h + add), bg)
+            canvas.alpha_composite(im, (0, 0))
+            canvas.alpha_composite(logo, (x, (h + add) - margin - target_h))
+            im = canvas
 
     im.convert("RGB").save(png_path)
 
