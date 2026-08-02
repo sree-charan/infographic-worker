@@ -60,18 +60,21 @@ jobs:
           # Fallback: a static cookie snapshot (expires; re-seed when it dies).
           NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}
         run: |
-          # Establish FILE-based auth. We must NOT leave NOTEBOOKLM_AUTH_JSON in
-          # the generate step's env: that env fast-path overrides the on-disk
-          # cookies the master token mints, pinning a stale snapshot.
+          # Capture secrets, then UNSET the env vars: notebooklm refuses to run
+          # `login` while NOTEBOOKLM_AUTH_JSON is set, and that env fast-path
+          # would also override the file cookies the master token mints.
+          MASTER="$NOTEBOOKLM_MASTER_TOKEN"
+          SNAPSHOT="$NOTEBOOKLM_AUTH_JSON"
+          unset NOTEBOOKLM_MASTER_TOKEN NOTEBOOKLM_AUTH_JSON
           DIR="$HOME/.notebooklm/profiles/default"
           mkdir -p "$DIR"
-          if [ -n "$NOTEBOOKLM_MASTER_TOKEN" ]; then
-            printf '%s' "$NOTEBOOKLM_MASTER_TOKEN" > "$DIR/master_token.json"
+          if [ -n "$MASTER" ]; then
+            printf '%s' "$MASTER" > "$DIR/master_token.json"
             chmod 600 "$DIR/master_token.json"
             notebooklm login --master-token-refresh
             echo "Master-token auth active (self-healing)."
-          elif [ -n "$NOTEBOOKLM_AUTH_JSON" ]; then
-            printf '%s' "$NOTEBOOKLM_AUTH_JSON" > "$DIR/storage_state.json"
+          elif [ -n "$SNAPSHOT" ]; then
+            printf '%s' "$SNAPSHOT" > "$DIR/storage_state.json"
             chmod 600 "$DIR/storage_state.json"
             echo "Cookie-snapshot auth active (may expire)."
           else
