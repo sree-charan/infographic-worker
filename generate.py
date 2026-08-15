@@ -29,7 +29,7 @@ import sys
 import time
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter, ImageStat
 
 CLI = os.environ.get("NOTEBOOKLM_BIN", "notebooklm")
 
@@ -221,54 +221,156 @@ def _bottom_empty_height(im: Image.Image, bg: tuple[int, int, int, int], tol: in
     return round(empty * h / sh)
 
 
+def _white_logo(logo: Image.Image) -> Image.Image:
+    """The logo in solid white, alpha preserved, for dark backgrounds."""
+    white = Image.new("RGBA", logo.size, (255, 255, 255, 0))
+    white.putalpha(logo.getchannel("A"))
+    return white
+
+
+def _busyness(im: Image.Image, box: tuple[int, int, int, int]) -> float:
+    """How much detail is in a region: mean edge energy, 0 for flat colour.
+
+    Used to choose where the logo can sit without landing on a face or a caption.
+    """
+    crop = im.convert("L").crop(box)
+    if crop.width < 2 or crop.height < 2:
+        return 1e9
+    edges = crop.filter(ImageFilter.FIND_EDGES)
+    return ImageStat.Stat(edges).mean[0]
+
+
+def _cover_wordmark(im: Image.Image, *, w_frac: float = 0.20,
+                    h_frac: float = 0.020,
+                    feather: int = 10) -> tuple[int, int, int, int] | None:
+    """Hide the generator's wordmark by cloning the pixels directly above it.
+
+    Measured on an unprocessed output: the mark is 192x20px on a 1536x2752 canvas,
+    sitting 11px from the bottom and 11px from the right. So a small corner
+    rectangle covers it - the previous approach cropped 3% of the height off the
+    whole width, 82px where 31 were needed, which sliced through body text and cut
+    illustrations flat.
+
+    Deliberately not matched by text or template. The mark read "NotebookLM" and now
+    reads "Gemini Notebook", so anything keyed to the wording breaks at the next
+    rename, and there is no reference image for the new one. Its geometry has not
+    moved, and a clone of the region above is invisible on flat background and
+    plausible on artwork.
+    """
+    w, h = im.size
+    bw = max(1, round(w * w_frac))
+    bh = max(1, round(h * h_frac))
+    # Flush to the right and bottom edges. An inset left the mark's last letters
+    # sitting in the feather zone, where the patch is only part opaque, so "LM"
+    # showed through at 682px of surviving ink.
+    x1, y1 = w, h
+    x0, y0 = max(0, x1 - bw), max(0, y1 - bh)
+    if y0 - bh < 0:
+        return None
+
+    donor = im.crop((x0, y0 - bh, x1, y0))
+    patch = donor.resize((x1 - x0, y1 - y0), Image.LANCZOS)
+
+    # Feather only the two interior edges - top and left - where the patch meets
+    # the picture. The other two are the image border, and must stay hard so the
+    # mark is fully covered.
+    mask = Image.new("L", patch.size, 255)
+    px = mask.load()
+    for i in range(min(feather, patch.width)):
+        a = int(255 * (i + 1) / (feather + 1))
+        for yy in range(patch.height):
+            px[i, yy] = min(px[i, yy], a)
+    for j in range(min(feather, patch.height)):
+        a = int(255 * (j + 1) / (feather + 1))
+        for xx in range(patch.width):
+            px[xx, j] = min(px[xx, j], a)
+    im.paste(patch, (x0, y0), mask)
+    return (x0, y0, x1, y1)
+
+
 def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
                   logo_path: Path | None, logo_width_frac: float,
-                  logo_margin_frac: float) -> None:
-    """Trim the thin NotebookLM logo strip, then place the portal logo at the
-    bottom — adaptively.
+                  logo_margin_frac: float, grow: bool = False) -> None:
+    """Remove the generator's wordmark and place the portal logo.
 
-    If the infographic already leaves enough blank space at the bottom, the logo
-    is overlaid there (no added height). If content runs to the bottom edge, a
-    band is appended — but only as tall as needed to fit the logo — in the
-    image's dominant colour, so it never overlays content and never wastes space.
+    The canvas is left exactly as it is. The previous version appended a band and
+    filled it by stretching the image's own bottom row downward, which turns
+    whatever is on that row into vertical streaks - on a full-bleed illustration
+    the figures and the flag smeared into 73px of stripes. That branch only ran
+    when content reached the bottom edge, which is precisely when the stretched row
+    is guaranteed to contain content, so it was self-defeating.
+
+    Instead the logo is overlaid on the quietest horizontal band in the bottom
+    third, in white or in brand colour depending on how dark that band is. Pass
+    grow=True for the old behaviour of appending space, now filled with a flat
+    colour rather than a stretched row.
     """
     im = Image.open(png_path).convert("RGBA")
-    w, h = im.size
 
-    crop = crop_px if crop_px is not None else round(h * crop_frac)
-    crop = max(0, min(crop, h - 1))
+    # An explicit crop is still honoured, for a one-off, but nothing is cropped by
+    # default: the wordmark is covered in place instead.
+    crop = crop_px if crop_px is not None else round(im.height * crop_frac)
+    crop = max(0, min(crop, im.height - 1))
     if crop:
-        im = im.crop((0, 0, w, h - crop))
-        w, h = im.size
+        im = im.crop((0, 0, im.width, im.height - crop))
+    else:
+        _cover_wordmark(im)
 
-    if logo_path and Path(logo_path).exists():
-        logo = Image.open(logo_path).convert("RGBA")
-        target_w = max(1, round(w * logo_width_frac))
-        target_h = max(1, round(target_w * logo.height / logo.width))
-        logo = logo.resize((target_w, target_h), Image.LANCZOS)
+    w, h = im.size
+    if not (logo_path and Path(logo_path).exists()):
+        im.convert("RGB").save(png_path)
+        return
 
-        margin = round(h * logo_margin_frac)
-        needed = target_h + 2 * margin
-        bg = _dominant_color(im)
-        empty = _bottom_empty_height(im, bg)
-        x = (w - target_w) // 2
+    logo = Image.open(logo_path).convert("RGBA")
+    target_w = max(1, round(w * logo_width_frac))
+    target_h = max(1, round(target_w * logo.height / logo.width))
+    logo = logo.resize((target_w, target_h), Image.LANCZOS)
 
-        if empty >= needed:
-            # Enough native whitespace — overlay, add no height.
-            im.alpha_composite(logo, (x, h - margin - target_h))
-        else:
-            # Extend by the shortfall. Fill by stretching the image's own bottom
-            # edge downward (not a flat colour), so any frame/border/background
-            # continues naturally — works on plain, cream, gradient, and framed
-            # (e.g. paper-on-background) infographics alike.
-            add = needed - empty
-            edge = im.crop((0, h - 2, w, h - 1)).resize((w, add), Image.NEAREST)
-            canvas = Image.new("RGBA", (w, h + add), bg)
-            canvas.alpha_composite(im, (0, 0))
-            canvas.alpha_composite(edge, (0, h))
-            canvas.alpha_composite(logo, (x, (h + add) - margin - target_h))
-            im = canvas
+    margin = round(h * logo_margin_frac)
+    x = (w - target_w) // 2
+    need = target_h + 2 * margin
 
+    bg = _dominant_color(im)
+    empty = _bottom_empty_height(im, bg)
+
+    if empty >= need:
+        # Native whitespace: sit in it, as before.
+        y = h - margin - target_h
+    elif grow:
+        add = need - empty
+        band = Image.new("RGBA", (w, add), bg)
+        canvas = Image.new("RGBA", (w, h + add), bg)
+        canvas.alpha_composite(im, (0, 0))
+        canvas.alpha_composite(band, (0, h))
+        im = canvas
+        h += add
+        y = h - margin - target_h
+    else:
+        # Content runs to the edge. Sit in the quietest band near the bottom rather
+        # than damaging the composition to make room. Biased downward: searching the
+        # whole bottom third put the logo 280px up on a full-bleed illustration,
+        # where it floated mid-picture instead of reading as a footer.
+        best_y, best_score = h - margin - target_h, None
+        lo = max(0, h - max(need, round(h * 0.18)))
+        hi = h - target_h - margin // 2
+        step = max(4, target_h // 4)
+        for cand in range(lo, hi + 1, step):
+            busy = _busyness(im, (x, cand, x + target_w, cand + target_h))
+            # Distance penalty in the same units as edge energy, calibrated so a
+            # quieter band is only worth taking if it is not far from the bottom.
+            penalty = 25.0 * (hi - cand) / max(h, 1)
+            score = busy + penalty
+            if best_score is None or score < best_score:
+                best_y, best_score = cand, score
+        y = best_y
+
+    # White reads on a dark or saturated band; the brand colours read on a light
+    # one. Same choice the video pipeline makes, for the same reason.
+    region = im.convert("RGB").crop((x, y, x + target_w, y + target_h))
+    if ImageStat.Stat(region.convert("L")).mean[0] < 140:
+        logo = _white_logo(logo)
+
+    im.alpha_composite(logo, (x, y))
     im.convert("RGB").save(png_path)
 
 
@@ -321,14 +423,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--timeout", type=int, default=900)
 
     # post-processing
-    p.add_argument("--crop-frac", type=float, default=0.03,
-                   help="Fraction of height to trim off the bottom (just the NotebookLM strip).")
+    p.add_argument("--crop-frac", type=float, default=0.0,
+                   help="Fraction of height to trim off the bottom. Default 0: the "
+                        "generator wordmark is covered in place instead, because a "
+                        "full-width crop deep enough to reach it also cut body text "
+                        "and sliced illustrations flat.")
     p.add_argument("--crop-px", type=int, default=None,
                    help="Absolute bottom crop in px (overrides --crop-frac).")
     p.add_argument("--logo", default="assets/logo.png", help="Logo PNG to paste.")
     p.add_argument("--no-logo", action="store_true")
     p.add_argument("--logo-width-frac", type=float, default=0.26)
     p.add_argument("--logo-margin-frac", type=float, default=0.02)
+    p.add_argument("--grow", action="store_true",
+                   help="Append space for the logo when content reaches the bottom "
+                        "edge, instead of overlaying it on the quietest band. The "
+                        "appended band is a flat colour; it used to be the image's "
+                        "own bottom row stretched downward, which smeared whatever "
+                        "was on that row into vertical streaks.")
 
     # hosting
     p.add_argument("--out", default="")
@@ -385,6 +496,7 @@ def main(argv: list[str] | None = None) -> int:
         logo_path=None if args.no_logo else Path(args.logo),
         logo_width_frac=args.logo_width_frac,
         logo_margin_frac=args.logo_margin_frac,
+        grow=args.grow,
     )
 
     manifest = stage_and_manifest(
