@@ -265,11 +265,25 @@ def _cover_wordmark(im: Image.Image, *, w_frac: float = 0.20,
     # showed through at 682px of surviving ink.
     x1, y1 = w, h
     x0, y0 = max(0, x1 - bw), max(0, y1 - bh)
-    if y0 - bh < 0:
-        return None
 
-    donor = im.crop((x0, y0 - bh, x1, y0))
-    patch = donor.resize((x1 - x0, y1 - y0), Image.LANCZOS)
+    # Flat fill in the local background colour. Two cleverer fills failed here in
+    # the same way, each assuming the pixels near the mark are background:
+    # cloning the strip above duplicated a card border 55px lower, and averaging
+    # that strip per column turned the body text into a faint barcode of vertical
+    # stripes. The mode of a ring around the rectangle is the one estimate that
+    # ignores whatever content is passing through it.
+    ring_h = max(bh * 3, 90)
+    ring = im.crop((max(0, x0 - bw // 2), max(0, y0 - ring_h), x1, y0)).convert("RGB")
+    small = ring.resize((min(ring.width, 160), min(ring.height, 90)), Image.BOX)
+    quant = small.quantize(colors=8, method=Image.Quantize.FASTOCTREE)
+    counts = sorted(quant.getcolors() or [], reverse=True)
+    if counts:
+        idx = counts[0][1]
+        pal = quant.getpalette()[idx * 3:idx * 3 + 3]
+        fill = (pal[0], pal[1], pal[2], 255)
+    else:
+        fill = _dominant_color(im)
+    patch = Image.new("RGBA", (x1 - x0, y1 - y0), fill)
 
     # Feather only the two interior edges - top and left - where the patch meets
     # the picture. The other two are the image border, and must stay hard so the
@@ -333,8 +347,11 @@ def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
     bg = _dominant_color(im)
     empty = _bottom_empty_height(im, bg)
 
-    if empty >= need:
-        # Native whitespace: sit in it, as before.
+    # One margin, not two. Requiring space for a margin above AND below meant a
+    # poster with 130px of clear space at the foot failed the test and fell through
+    # to the band search, which floated the logo 376px up into the middle of the
+    # design.
+    if empty >= target_h + margin:
         y = h - margin - target_h
     elif grow:
         add = need - empty

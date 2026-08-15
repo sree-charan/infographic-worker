@@ -88,14 +88,25 @@ jobs:
           # NOTEBOOKLM_AUTH_JSON here or it overrides the minted file cookies.
           # Optional: pin a specific notebook to reuse (else a new one is created).
           NOTEBOOKLM_NOTEBOOK: ${{ vars.NOTEBOOKLM_NOTEBOOK }}
+          # Inputs travel through the environment, never interpolated into the
+          # command line. A steer containing a double quote ended the shell's
+          # quoting and argparse received the rest of the sentence as stray
+          # arguments: 'unrecognized arguments: Independence Day. No other words'.
+          # Newlines in a multi-line steer would break it the same way.
+          IN_TEXT: ${{ inputs.text }}
+          IN_TITLE: ${{ inputs.title }}
+          IN_ORIENTATION: ${{ inputs.orientation }}
+          IN_DETAIL: ${{ inputs.detail }}
+          IN_STYLE: ${{ inputs.style }}
+          IN_INSTRUCTIONS: ${{ inputs.instructions }}
         run: |
           python generate.py \
-            --text "${{ inputs.text }}" \
-            --title "${{ inputs.title }}" \
-            --orientation "${{ inputs.orientation }}" \
-            --detail "${{ inputs.detail }}" \
-            --style "${{ inputs.style }}" \
-            --instructions "${{ inputs.instructions }}" \
+            --text "$IN_TEXT" \
+            --title "$IN_TITLE" \
+            --orientation "$IN_ORIENTATION" \
+            --detail "$IN_DETAIL" \
+            --style "$IN_STYLE" \
+            --instructions "$IN_INSTRUCTIONS" \
             --host-dir generated \
             --manifest generated/latest.json \
             --repo "${{ github.repository }}" \
