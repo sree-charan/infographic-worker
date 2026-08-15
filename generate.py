@@ -196,7 +196,17 @@ def _bottom_empty_height(im: Image.Image, bg: tuple[int, int, int, int], tol: in
     """How many px of near-uniform background the image already has at the bottom.
 
     Scans rows upward from the bottom; a row counts as empty until >2% of its
-    pixels differ from the background colour. Returned in original-image px.
+    pixels differ from the reference colour. Returned in original-image px.
+
+    The reference is taken from the bottom rows themselves, not from `bg`. The
+    page's dominant colour is often not the footer's: a white card on a cream
+    background reports white, no footer row matches it, and the answer comes back 0
+    - so a poster with a 342px empty foot looked full to the caller. `bg` is only
+    the fallback for when the bottom strip cannot be sampled.
+
+    Call this AFTER the generator's wordmark has been covered. The mark sits in
+    that footer, and a scan for uniform rows stops dead at it: measured 9px on a
+    poster whose real whitespace was 206px.
     """
     rgb = im.convert("RGB")
     w, h = rgb.size
@@ -204,7 +214,17 @@ def _bottom_empty_height(im: Image.Image, bg: tuple[int, int, int, int], tol: in
     sh = min(h, 600)
     small = rgb.resize((sw, sh))
     px = small.load()
-    br, bgc, bb = bg[0], bg[1], bg[2]
+
+    foot = small.crop((0, sh - max(2, sh // 50), sw, sh))
+    quant = foot.quantize(colors=4, method=Image.Quantize.FASTOCTREE)
+    counts = sorted(quant.getcolors() or [], reverse=True)
+    if counts:
+        idx = counts[0][1]
+        pal = quant.getpalette()[idx * 3:idx * 3 + 3]
+        br, bgc, bb = pal[0], pal[1], pal[2]
+    else:
+        br, bgc, bb = bg[0], bg[1], bg[2]
+
     limit = max(1, int(sw * 0.02))
     empty = 0
     for y in range(sh - 1, -1, -1):
@@ -340,12 +360,27 @@ def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
     target_h = max(1, round(target_w * logo.height / logo.width))
     logo = logo.resize((target_w, target_h), Image.LANCZOS)
 
-    margin = round(h * logo_margin_frac)
+    # Margin proportional to the logo, not to the page. A fraction of a 2752px
+    # canvas gave a 55px margin regardless of how big the logo was.
+    margin = (round(h * logo_margin_frac) if logo_margin_frac > 0
+              else max(12, round(target_h * 0.55)))
     x = (w - target_w) // 2
     need = target_h + 2 * margin
 
     bg = _dominant_color(im)
     empty = _bottom_empty_height(im, bg)
+
+    # Trim surplus footer. The generator leaves a deep empty strip at the foot -
+    # measured 342px on a 2752px poster, 12% of the image - and putting a small
+    # logo in the middle of it wastes the space rather than using it. Note this
+    # only measures correctly because the wordmark was covered first: the mark sits
+    # in that strip, and a scan for uniform rows stops dead at it, reporting 11px
+    # of whitespace instead of 342. That is why the old code thought it had to
+    # append a band to a poster that already had room for four logos.
+    if empty > need:
+        im = im.crop((0, 0, w, h - (empty - need)))
+        w, h = im.size
+        empty = need
 
     # One margin, not two. Requiring space for a margin above AND below meant a
     # poster with 130px of clear space at the foot failed the test and fell through
@@ -450,7 +485,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--logo", default="assets/logo.png", help="Logo PNG to paste.")
     p.add_argument("--no-logo", action="store_true")
     p.add_argument("--logo-width-frac", type=float, default=0.26)
-    p.add_argument("--logo-margin-frac", type=float, default=0.02)
+    p.add_argument("--logo-margin-frac", type=float, default=0.0,
+                   help="Space above and below the logo as a fraction of image "
+                        "height. Default 0 means auto: proportional to the logo "
+                        "instead, since a fraction of a 2752px canvas gave the same "
+                        "55px margin whatever size the logo was.")
     p.add_argument("--grow", action="store_true",
                    help="Append space for the logo when content reaches the bottom "
                         "edge, instead of overlaying it on the quietest band. The "
