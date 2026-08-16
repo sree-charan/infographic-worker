@@ -30,6 +30,12 @@ on:
         description: "Optional extra steer for generation"
         required: false
         default: ""
+      poster:
+        description: "Poster: one line of text, no other writing"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
 
 permissions:
   contents: write
