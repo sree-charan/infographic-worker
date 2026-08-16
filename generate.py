@@ -202,10 +202,15 @@ def write_placeholder(out_path: Path, size: tuple[int, int] = (600, 1000)) -> No
 # post-processing: crop NotebookLM footer + paste portal logo
 # --------------------------------------------------------------------------- #
 def _dominant_color(im: Image.Image) -> tuple[int, int, int, int]:
-    """Most-used colour in the image (the background, for an infographic)."""
+    """Most-used colour in the image - the page background, for an infographic.
+
+    Downsampled with NEAREST, so every counted colour is one that actually appears.
+    Smooth resampling invents averages along every edge, and the winner can be a
+    colour present nowhere in the picture.
+    """
     rgb = im.convert("RGB")
     w, h = rgb.size
-    small = rgb.resize((128, max(1, round(128 * h / w))))
+    small = rgb.resize((160, max(1, round(160 * h / w))), Image.NEAREST)
     colors = small.getcolors(maxcolors=small.width * small.height) or [(1, (255, 255, 255))]
     r, g, b = max(colors, key=lambda c: c[0])[1]
     return (r, g, b, 255)
@@ -267,22 +272,72 @@ def _white_logo(logo: Image.Image) -> Image.Image:
     return white
 
 
-def _modal_color(im: Image.Image, box: tuple[int, int, int, int],
-                 colors: int = 8) -> tuple[int, int, int, int]:
-    """Most-used colour in a region, ignoring whatever is passing through it.
+def _edge_color(im: Image.Image, box: tuple[int, int, int, int],
+                band: int = 10) -> tuple[int, int, int, int]:
+    """Most common exact colour in a thin ring just outside `box`.
 
-    The mode, not the mean: a mean across a light background and a dark glyph
-    returns a colour present nowhere in the picture.
+    Two things matter here and both were wrong before.
+
+    The sample must be adjacent. Sampling a large block above and to the left took
+    in the poster's decorative frame, so the patch came out 16 levels darker than
+    the white it sat on - a visible grey rectangle. Only the colour immediately
+    around the mark can match it.
+
+    And it must be an exact colour, counted. Quantizing to a palette and taking the
+    most common entry returns an averaged colour that may appear nowhere in the
+    picture, which is the same mistake as taking a mean.
     """
-    crop = im.crop(box).convert("RGB")
-    crop = crop.resize((min(crop.width, 160), max(1, min(crop.height, 60))), Image.BOX)
-    quant = crop.quantize(colors=colors, method=Image.Quantize.FASTOCTREE)
-    counts = sorted(quant.getcolors() or [], reverse=True)
+    from collections import Counter
+
+    x0, y0, x1, y1 = box
+    rgb = im.convert("RGB")
+    w, h = rgb.size
+    px = rgb.load()
+
+    counts: Counter = Counter()
+    for y in range(max(0, y0 - band), min(h, y0)):
+        for x in range(max(0, x0 - band), min(w, x1)):
+            counts[px[x, y]] += 1
+    for y in range(max(0, y0 - band), min(h, y1)):
+        for x in range(max(0, x0 - band), min(w, x0)):
+            counts[px[x, y]] += 1
+
     if not counts:
         return _dominant_color(im)
-    idx = counts[0][1]
-    pal = quant.getpalette()[idx * 3:idx * 3 + 3]
-    return (pal[0], pal[1], pal[2], 255)
+    r, g, b = counts.most_common(1)[0][0]
+    return (r, g, b, 255)
+
+
+def _feathered_fill(size: tuple[int, int], colour: tuple[int, int, int, int],
+                    ramps: tuple[int, int, int, int] = (8, 8, 3, 3)
+                    ) -> tuple[Image.Image, Image.Image]:
+    """A flat patch plus a mask that ramps in from each edge by its own amount.
+
+    `ramps` is (left, top, right, bottom). Per side because the two sides facing
+    into the picture have room for a long, invisible ramp, while the two facing the
+    canvas edge do not: the mark sits only 11px off the corner, so a long ramp there
+    would cross the mark, and a ramp across the mark leaves its letters part
+    covered. That is how "NOTEBOOKLM" stayed faintly legible under our logo.
+    """
+    w, h = size
+    patch = Image.new("RGBA", (w, h), colour)
+    mask = Image.new("L", (w, h), 0)
+    px = mask.load()
+    rl, rt, rr, rb = (max(r, 0) for r in ramps)
+    for y in range(h):
+        fy = 1.0
+        if rt and y < rt:
+            fy = min(fy, (y + 1) / (rt + 1))
+        if rb and h - 1 - y < rb:
+            fy = min(fy, (h - y) / (rb + 1))
+        for x in range(w):
+            fx = 1.0
+            if rl and x < rl:
+                fx = min(fx, (x + 1) / (rl + 1))
+            if rr and w - 1 - x < rr:
+                fx = min(fx, (w - x) / (rr + 1))
+            px[x, y] = int(255 * min(fx, fy))
+    return patch, mask
 
 
 def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
@@ -323,20 +378,35 @@ def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
     target_h = max(1, round(target_w * logo.height / logo.width))
     logo = logo.resize((target_w, target_h), Image.LANCZOS)
 
-    inset = max(6, round(w * 0.007))
-    # The patch has to be at least as big as the mark it hides, and at least as big
-    # as the logo that replaces it.
-    patch_w = max(target_w, round(w * 0.14)) + 2 * inset
-    patch_h = max(target_h, round(h * 0.012)) + 2 * inset
-    px1, py1 = w, h
-    px0, py0 = max(0, px1 - patch_w), max(0, py1 - patch_h)
+    # Measured on an unprocessed output: the wordmark is 192x20px sitting 11px off
+    # the right and bottom edges of a 1536x2752 canvas. The patch has to reach
+    # closer to the edge than that, or the mark's last rows fall outside it.
+    edge_x = max(3, round(w * 0.002))
+    edge_y = max(3, round(h * 0.0015))
+    mark_w = max(target_w, round(w * 0.145))
+    mark_h = max(target_h, round(h * 0.013))
 
-    # Background sampled from a ring beside and above the patch, never from inside
-    # it: the mark is in there, and including it drags the colour dark.
-    ring = (max(0, px0 - patch_w), max(0, py0 - patch_h), px1, py0)
-    bg = _modal_color(im, ring)
+    cx1, cy1 = w - edge_x, h - edge_y
+    cx0, cy0 = max(0, cx1 - mark_w), max(0, cy1 - mark_h)
 
-    im.paste(Image.new("RGBA", (px1 - px0, py1 - py0), bg), (px0, py0))
+    # Long ramps on the two sides facing the picture, short ones towards the canvas
+    # edge where there is no room. The patch still stops short of the very corner so
+    # a border running along it is not cut in half.
+    ramp_in, ramp_out = 10, 3
+    px0, py0 = max(0, cx0 - ramp_in), max(0, cy0 - ramp_in)
+    px1, py1 = min(w, cx1 + ramp_out), min(h, cy1 + ramp_out)
+
+    # The page's most-used colour, which is what the mark sits on. The local ring is
+    # only trusted when it agrees: a ring beside the mark can land on a decorative
+    # border or a drop shadow, and then the patch comes out 16 levels darker than
+    # the white around it, or navy on white.
+    page = _dominant_color(im)
+    local = _edge_color(im, (px0, py0, px1, py1))
+    bg = local if sum(abs(a - b) for a, b in zip(local[:3], page[:3])) <= 40 else page
+
+    patch, mask = _feathered_fill((px1 - px0, py1 - py0), bg,
+                                  ramps=(ramp_in, ramp_in, ramp_out, ramp_out))
+    im.paste(patch, (px0, py0), mask)
 
     # White on a dark background, the brand colours on a light one. No black
     # variant: on the backgrounds this generator produces it never wins.
@@ -344,8 +414,8 @@ def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
     if luma < 140:
         logo = _white_logo(logo)
 
-    lx = px1 - inset - target_w
-    ly = py1 - inset - target_h + (patch_h - 2 * inset - target_h) // 2
+    lx = cx0 + (mark_w - target_w) // 2
+    ly = cy0 + (mark_h - target_h) // 2
     im.alpha_composite(logo, (max(0, lx), max(0, ly)))
     im.convert("RGB").save(png_path)
 
