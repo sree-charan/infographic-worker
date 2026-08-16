@@ -99,8 +99,11 @@ jobs:
           IN_DETAIL: ${{ inputs.detail }}
           IN_STYLE: ${{ inputs.style }}
           IN_INSTRUCTIONS: ${{ inputs.instructions }}
+          IN_POSTER: ${{ inputs.poster }}
         run: |
-          python generate.py \
+          POSTER_FLAG=""
+          [ "$IN_POSTER" = "true" ] && POSTER_FLAG="--poster"
+          python generate.py $POSTER_FLAG \
             --text "$IN_TEXT" \
             --title "$IN_TITLE" \
             --orientation "$IN_ORIENTATION" \

@@ -66,9 +66,28 @@ def slugify(text: str, max_len: int = 40) -> str:
     return (s[:max_len].strip("-")) or "infographic"
 
 
-def compose_description(user_instructions: str | None) -> str:
-    """Combine the voice directive with any caller-supplied steer."""
-    parts = [VOICE_DIRECTIVE]
+# For a poster, VOICE_DIRECTIVE is actively harmful: it demands facts, dates,
+# venues and scannable headings, so asking for a text-free image while sending it
+# produces a notice with a headline. This replaces it rather than arguing with it.
+POSTER_DIRECTIVE = (
+    "This is a decorative POSTER, not an infographic and not a notice. It carries "
+    "no information: no facts, no dates, no times, no venues, no names, no numbers, "
+    "no headings, no subheadings, no body copy, no bullet points, no labels, no "
+    "captions, no credits and no watermarks.\n\n"
+    "Render exactly one piece of text, exactly once: \"{line}\". Nothing else "
+    "written anywhere in the image - no second copy of it, no translation, no "
+    "decorative lettering that spells other words.\n\n"
+    "Everything else is illustration. Fill the composition with imagery and colour "
+    "rather than words, and let the single line of text be the focal point.\n\n"
+    "Set the text in a display weight large enough to read at a glance, and keep it "
+    "clear of the illustration so neither fights the other."
+)
+
+
+def compose_description(user_instructions: str | None, *, poster: bool = False,
+                        line: str = "") -> str:
+    """Combine the governing directive with any caller-supplied steer."""
+    parts = [POSTER_DIRECTIVE.format(line=line) if poster else VOICE_DIRECTIVE]
     if user_instructions and user_instructions.strip():
         parts.append(user_instructions.strip())
     return "\n\n".join(parts)
@@ -370,6 +389,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--detail", default="detailed",
                    choices=["concise", "standard", "detailed"])
     p.add_argument("--style", default=os.environ.get("INFOGRAPHIC_STYLE", ""))
+    p.add_argument("--poster", action="store_true",
+                   help="Decorative poster with one line of text and no other "
+                        "writing. Replaces the voice directive, which otherwise "
+                        "demands facts and headings and gives you a notice.")
     p.add_argument("--instructions", default="",
                    help="Extra steer, appended to the built-in human-voice directive.")
     p.add_argument("--notebook-id", default=os.environ.get("NOTEBOOKLM_NOTEBOOK", ""),
@@ -441,7 +464,9 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(3)  # let the text source register
         generate_infographic(
             notebook_id,
-            description=compose_description(args.instructions),
+            description=compose_description(args.instructions,
+                                            poster=args.poster,
+                                            line=(args.text or args.title)),
             orientation=args.orientation,
             detail=args.detail,
             style=args.style or None,
