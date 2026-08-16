@@ -29,7 +29,7 @@ import sys
 import time
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageStat
+from PIL import Image
 
 CLI = os.environ.get("NOTEBOOKLM_BIN", "notebooklm")
 
@@ -248,109 +248,53 @@ def _white_logo(logo: Image.Image) -> Image.Image:
     return white
 
 
-def _busyness(im: Image.Image, box: tuple[int, int, int, int]) -> float:
-    """How much detail is in a region: mean edge energy, 0 for flat colour.
+def _modal_color(im: Image.Image, box: tuple[int, int, int, int],
+                 colors: int = 8) -> tuple[int, int, int, int]:
+    """Most-used colour in a region, ignoring whatever is passing through it.
 
-    Used to choose where the logo can sit without landing on a face or a caption.
+    The mode, not the mean: a mean across a light background and a dark glyph
+    returns a colour present nowhere in the picture.
     """
-    crop = im.convert("L").crop(box)
-    if crop.width < 2 or crop.height < 2:
-        return 1e9
-    edges = crop.filter(ImageFilter.FIND_EDGES)
-    return ImageStat.Stat(edges).mean[0]
-
-
-def _cover_wordmark(im: Image.Image, *, w_frac: float = 0.20,
-                    h_frac: float = 0.020,
-                    feather: int = 10) -> tuple[int, int, int, int] | None:
-    """Hide the generator's wordmark by cloning the pixels directly above it.
-
-    Measured on an unprocessed output: the mark is 192x20px on a 1536x2752 canvas,
-    sitting 11px from the bottom and 11px from the right. So a small corner
-    rectangle covers it - the previous approach cropped 3% of the height off the
-    whole width, 82px where 31 were needed, which sliced through body text and cut
-    illustrations flat.
-
-    Deliberately not matched by text or template. The mark read "NotebookLM" and now
-    reads "Gemini Notebook", so anything keyed to the wording breaks at the next
-    rename, and there is no reference image for the new one. Its geometry has not
-    moved, and a clone of the region above is invisible on flat background and
-    plausible on artwork.
-    """
-    w, h = im.size
-    bw = max(1, round(w * w_frac))
-    bh = max(1, round(h * h_frac))
-    # Flush to the right and bottom edges. An inset left the mark's last letters
-    # sitting in the feather zone, where the patch is only part opaque, so "LM"
-    # showed through at 682px of surviving ink.
-    x1, y1 = w, h
-    x0, y0 = max(0, x1 - bw), max(0, y1 - bh)
-
-    # Flat fill in the local background colour. Two cleverer fills failed here in
-    # the same way, each assuming the pixels near the mark are background:
-    # cloning the strip above duplicated a card border 55px lower, and averaging
-    # that strip per column turned the body text into a faint barcode of vertical
-    # stripes. The mode of a ring around the rectangle is the one estimate that
-    # ignores whatever content is passing through it.
-    ring_h = max(bh * 3, 90)
-    ring = im.crop((max(0, x0 - bw // 2), max(0, y0 - ring_h), x1, y0)).convert("RGB")
-    small = ring.resize((min(ring.width, 160), min(ring.height, 90)), Image.BOX)
-    quant = small.quantize(colors=8, method=Image.Quantize.FASTOCTREE)
+    crop = im.crop(box).convert("RGB")
+    crop = crop.resize((min(crop.width, 160), max(1, min(crop.height, 60))), Image.BOX)
+    quant = crop.quantize(colors=colors, method=Image.Quantize.FASTOCTREE)
     counts = sorted(quant.getcolors() or [], reverse=True)
-    if counts:
-        idx = counts[0][1]
-        pal = quant.getpalette()[idx * 3:idx * 3 + 3]
-        fill = (pal[0], pal[1], pal[2], 255)
-    else:
-        fill = _dominant_color(im)
-    patch = Image.new("RGBA", (x1 - x0, y1 - y0), fill)
-
-    # Feather only the two interior edges - top and left - where the patch meets
-    # the picture. The other two are the image border, and must stay hard so the
-    # mark is fully covered.
-    mask = Image.new("L", patch.size, 255)
-    px = mask.load()
-    for i in range(min(feather, patch.width)):
-        a = int(255 * (i + 1) / (feather + 1))
-        for yy in range(patch.height):
-            px[i, yy] = min(px[i, yy], a)
-    for j in range(min(feather, patch.height)):
-        a = int(255 * (j + 1) / (feather + 1))
-        for xx in range(patch.width):
-            px[xx, j] = min(px[xx, j], a)
-    im.paste(patch, (x0, y0), mask)
-    return (x0, y0, x1, y1)
+    if not counts:
+        return _dominant_color(im)
+    idx = counts[0][1]
+    pal = quant.getpalette()[idx * 3:idx * 3 + 3]
+    return (pal[0], pal[1], pal[2], 255)
 
 
 def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
                   logo_path: Path | None, logo_width_frac: float,
                   logo_margin_frac: float, grow: bool = False) -> None:
-    """Remove the generator's wordmark and place the portal logo.
+    """Swap the generator's wordmark for the portal logo, in place.
 
-    The canvas is left exactly as it is. The previous version appended a band and
-    filled it by stretching the image's own bottom row downward, which turns
-    whatever is on that row into vertical streaks - on a full-bleed illustration
-    the figures and the flag smeared into 73px of stripes. That branch only ran
-    when content reached the bottom edge, which is precisely when the stretched row
-    is guaranteed to contain content, so it was self-defeating.
+    The wordmark is always in the same spot - bottom right, measured at 192x20px
+    sitting 11px off the edges of a 1536x2752 canvas - so this is a local swap and
+    nothing else. The canvas is not resized, nothing is cropped, no band is added
+    and nothing is drawn over the artwork.
 
-    Instead the logo is overlaid on the quietest horizontal band in the bottom
-    third, in white or in brand colour depending on how dark that band is. Pass
-    grow=True for the old behaviour of appending space, now filled with a flat
-    colour rather than a stretched row.
+    Everything else was tried and was worse. Cropping deep enough to reach the mark
+    took body text and sliced illustrations flat. Appending a band and filling it by
+    stretching the bottom row smeared that row into vertical stripes. Trimming the
+    generator's own footer changed the format of the design. Placing the logo on the
+    "quietest" band put it on top of the picture.
+
+    A patch of the surrounding background goes down first, then the logo on top, in
+    white or in its own colours depending on how dark that background is.
     """
     im = Image.open(png_path).convert("RGBA")
 
-    # An explicit crop is still honoured, for a one-off, but nothing is cropped by
-    # default: the wordmark is covered in place instead.
+    # An explicit crop is still honoured for a one-off, but nothing is cropped by
+    # default.
     crop = crop_px if crop_px is not None else round(im.height * crop_frac)
     crop = max(0, min(crop, im.height - 1))
     if crop:
         im = im.crop((0, 0, im.width, im.height - crop))
-    else:
-        _cover_wordmark(im)
-
     w, h = im.size
+
     if not (logo_path and Path(logo_path).exists()):
         im.convert("RGB").save(png_path)
         return
@@ -360,75 +304,33 @@ def process_image(png_path: Path, *, crop_frac: float, crop_px: int | None,
     target_h = max(1, round(target_w * logo.height / logo.width))
     logo = logo.resize((target_w, target_h), Image.LANCZOS)
 
-    # Margin proportional to the logo, not to the page. A fraction of a 2752px
-    # canvas gave a 55px margin regardless of how big the logo was.
-    margin = (round(h * logo_margin_frac) if logo_margin_frac > 0
-              else max(12, round(target_h * 0.55)))
-    x = (w - target_w) // 2
-    need = target_h + 2 * margin
+    inset = max(6, round(w * 0.007))
+    # The patch has to be at least as big as the mark it hides, and at least as big
+    # as the logo that replaces it.
+    patch_w = max(target_w, round(w * 0.14)) + 2 * inset
+    patch_h = max(target_h, round(h * 0.012)) + 2 * inset
+    px1, py1 = w, h
+    px0, py0 = max(0, px1 - patch_w), max(0, py1 - patch_h)
 
-    bg = _dominant_color(im)
-    empty = _bottom_empty_height(im, bg)
+    # Background sampled from a ring beside and above the patch, never from inside
+    # it: the mark is in there, and including it drags the colour dark.
+    ring = (max(0, px0 - patch_w), max(0, py0 - patch_h), px1, py0)
+    bg = _modal_color(im, ring)
 
-    # Trim surplus footer. The generator leaves a deep empty strip at the foot -
-    # measured 342px on a 2752px poster, 12% of the image - and putting a small
-    # logo in the middle of it wastes the space rather than using it. Note this
-    # only measures correctly because the wordmark was covered first: the mark sits
-    # in that strip, and a scan for uniform rows stops dead at it, reporting 11px
-    # of whitespace instead of 342. That is why the old code thought it had to
-    # append a band to a poster that already had room for four logos.
-    if empty > need:
-        im = im.crop((0, 0, w, h - (empty - need)))
-        w, h = im.size
-        empty = need
+    im.paste(Image.new("RGBA", (px1 - px0, py1 - py0), bg), (px0, py0))
 
-    # One margin, not two. Requiring space for a margin above AND below meant a
-    # poster with 130px of clear space at the foot failed the test and fell through
-    # to the band search, which floated the logo 376px up into the middle of the
-    # design.
-    if empty >= target_h + margin:
-        y = h - margin - target_h
-    elif grow:
-        add = need - empty
-        band = Image.new("RGBA", (w, add), bg)
-        canvas = Image.new("RGBA", (w, h + add), bg)
-        canvas.alpha_composite(im, (0, 0))
-        canvas.alpha_composite(band, (0, h))
-        im = canvas
-        h += add
-        y = h - margin - target_h
-    else:
-        # Content runs to the edge. Sit in the quietest band near the bottom rather
-        # than damaging the composition to make room. Biased downward: searching the
-        # whole bottom third put the logo 280px up on a full-bleed illustration,
-        # where it floated mid-picture instead of reading as a footer.
-        best_y, best_score = h - margin - target_h, None
-        lo = max(0, h - max(need, round(h * 0.18)))
-        hi = h - target_h - margin // 2
-        step = max(4, target_h // 4)
-        for cand in range(lo, hi + 1, step):
-            busy = _busyness(im, (x, cand, x + target_w, cand + target_h))
-            # Distance penalty in the same units as edge energy, calibrated so a
-            # quieter band is only worth taking if it is not far from the bottom.
-            penalty = 25.0 * (hi - cand) / max(h, 1)
-            score = busy + penalty
-            if best_score is None or score < best_score:
-                best_y, best_score = cand, score
-        y = best_y
-
-    # White reads on a dark or saturated band; the brand colours read on a light
-    # one. Same choice the video pipeline makes, for the same reason.
-    region = im.convert("RGB").crop((x, y, x + target_w, y + target_h))
-    if ImageStat.Stat(region.convert("L")).mean[0] < 140:
+    # White on a dark background, the brand colours on a light one. No black
+    # variant: on the backgrounds this generator produces it never wins.
+    luma = (bg[0] * 299 + bg[1] * 587 + bg[2] * 114) // 1000
+    if luma < 140:
         logo = _white_logo(logo)
 
-    im.alpha_composite(logo, (x, y))
+    lx = px1 - inset - target_w
+    ly = py1 - inset - target_h + (patch_h - 2 * inset - target_h) // 2
+    im.alpha_composite(logo, (max(0, lx), max(0, ly)))
     im.convert("RGB").save(png_path)
 
 
-# --------------------------------------------------------------------------- #
-# hosting / manifest
-# --------------------------------------------------------------------------- #
 def stage_and_manifest(png_path: Path, *, title: str, orientation: str, detail: str,
                        notebook_id: str, repo: str | None, ref: str | None,
                        host_dir: str, manifest_path: Path) -> dict:
@@ -477,14 +379,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # post-processing
     p.add_argument("--crop-frac", type=float, default=0.0,
                    help="Fraction of height to trim off the bottom. Default 0: the "
-                        "generator wordmark is covered in place instead, because a "
-                        "full-width crop deep enough to reach it also cut body text "
-                        "and sliced illustrations flat.")
+                        "wordmark is swapped in place, so no crop is needed, and any "
+                        "crop deep enough to reach it also cuts body text.")
     p.add_argument("--crop-px", type=int, default=None,
                    help="Absolute bottom crop in px (overrides --crop-frac).")
     p.add_argument("--logo", default="assets/logo.png", help="Logo PNG to paste.")
     p.add_argument("--no-logo", action="store_true")
-    p.add_argument("--logo-width-frac", type=float, default=0.26)
+    p.add_argument("--logo-width-frac", type=float, default=0.13,
+                   help="Logo width as a fraction of image width. Matched to the "
+                        "wordmark it replaces, which measures 192px on a 1536px "
+                        "canvas - an eighth of the width.")
     p.add_argument("--logo-margin-frac", type=float, default=0.0,
                    help="Space above and below the logo as a fraction of image "
                         "height. Default 0 means auto: proportional to the logo "
